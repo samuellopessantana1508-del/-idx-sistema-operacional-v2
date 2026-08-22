@@ -2851,7 +2851,7 @@ async function loadDashboard() {
 
   try {
     const [{ data: clientes, error: errC }, { data: tarefas }] = await Promise.all([
-      SB.from('clientes_v').select('*').neq('ativo', false),
+      SB.from('clientes').select('*').neq('ativo', false),
       SB.from('client_tasks').select('*, clientes(nome)').eq('concluida', false)
     ]);
     if (errC) throw errC;
@@ -3435,7 +3435,7 @@ async function loadClientes() {
   content.innerHTML = '<div class="meta-loading"><div class="loader"></div><div>Carregando clientes...</div></div>';
 
   try {
-    const { data, error } = await SB.from('clientes_v').select('*').neq('ativo', false).order('nome', { ascending: true });
+    const { data, error } = await SB.from('clientes').select('*').neq('ativo', false).order('nome', { ascending: true });
     if (error) throw error;
     CLIENTES = data || [];
 
