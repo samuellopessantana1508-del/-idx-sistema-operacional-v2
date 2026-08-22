@@ -3924,10 +3924,27 @@ async function loadMetaDashboard(clientId) {
       return;
     }
 
+    const { data: creds, error: credsErr } = await SB.rpc('get_meta_token', { p_client_id: clientId });
+    if (credsErr || !creds?.[0]?.access_token) {
+      renderMetaEmptyState('Token não encontrado', 'Configure o Access Token na tela de Conectar Conta Meta Ads.');
+      return;
+    }
+
     META_STATE.accountId = metaAccount.ad_account_id;
-    META_STATE.token = null;
-    META_STATE.data = await loadMetaViaProxy(clientId, startDate, endDate, compareStart, compareEnd);
-    META_STATE.compareData = compareStart ? { insights: META_STATE.data.compare_insights || [], campaigns: [] } : null;
+    META_STATE.token = creds[0].access_token;
+    META_STATE.data = await loadMetaDirect(
+      { ad_account_id: metaAccount.ad_account_id, access_token: creds[0].access_token },
+      startDate, endDate
+    );
+    if (compareStart && compareEnd) {
+      const cmpData = await loadMetaDirect(
+        { ad_account_id: metaAccount.ad_account_id, access_token: creds[0].access_token },
+        compareStart, compareEnd, { summaryOnly: true }
+      );
+      META_STATE.compareData = { insights: cmpData.insights || [], campaigns: [] };
+    } else {
+      META_STATE.compareData = null;
+    }
 
     renderMetaDashboard(clientId);
   } catch(e) {
