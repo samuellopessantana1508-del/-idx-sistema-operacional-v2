@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>IDX — Sistema Operacional v2</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&family=Noto+Sans:wght@400;500;700&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -47,7 +47,12 @@ body {
   background: var(--bg-absolute);
   color: var(--txt-primary);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
 
 /* LOADING SCREEN */
@@ -1010,13 +1015,14 @@ body {
   margin-bottom: 32px;
 }
 .section-title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--txt-primary);
   margin-bottom: 16px;
   display: flex;
   align-items: center;
   gap: 8px;
+  letter-spacing: -0.02em;
 }
 
 .focus-card {
@@ -1177,21 +1183,26 @@ table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 table thead {
   background: var(--bg-accent);
   border-bottom: 1px solid var(--border-mid);
 }
 table th {
-  padding: 12px;
+  padding: 10px 12px;
   text-align: left;
   font-weight: 600;
-  color: var(--txt-secondary);
+  font-size: 10px;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  color: var(--txt-muted);
 }
 table td {
-  padding: 12px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border-light);
   color: var(--txt-primary);
+  line-height: 1.4;
 }
 table tbody tr:hover {
   background: var(--surf-1);
@@ -1272,7 +1283,7 @@ table input:focus, table select:focus {
   background: var(--surf-1);
   border: 1px solid var(--border-light);
   border-radius: var(--radius);
-  padding: 12px 14px;
+  padding: 14px 16px;
   transition: border-color .15s;
   position: relative;
 }
@@ -1281,19 +1292,20 @@ table input:focus, table select:focus {
 .metric-card.warn { border-color: rgba(234,179,8,.35); background: rgba(234,179,8,.04); }
 .metric-card.good { border-color: rgba(34,197,94,.35); background: rgba(34,197,94,.04); }
 .metric-label {
-  font-size: 9px;
-  letter-spacing: 1.5px;
-  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: .8px;
+  font-weight: 600;
   color: var(--txt-muted);
   margin-bottom: 6px;
   text-transform: uppercase;
 }
 .metric-value {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 800;
   color: var(--txt-primary);
-  margin-bottom: 3px;
-  font-family: var(--mono);
+  margin-bottom: 4px;
+  font-family: var(--sans);
+  letter-spacing: -0.03em;
 }
 .metric-change {
   font-size: 11px;
