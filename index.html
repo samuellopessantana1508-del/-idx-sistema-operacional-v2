@@ -4113,7 +4113,7 @@ function getMetaActionCount(row, matchers) {
   let total = 0;
   for (const action of (row.actions || [])) {
     const type = action.action_type || '';
-    if (matchers.some(m => type === m || type.includes(m))) {
+    if (matchers.some(m => type === m)) {
       total += parseFloat(action.value || 0);
     }
   }
@@ -4121,8 +4121,8 @@ function getMetaActionCount(row, matchers) {
 }
 
 function getMetaPrimaryConversion(row) {
-  const msgs = getMetaActionCount(row, ['messaging_conversation_started', 'onsite_conversion.messaging']);
-  const leads = getMetaActionCount(row, ['lead', 'onsite_conversion.lead_grouped']);
+  const msgs = getMetaActionCount(row, ['onsite_conversion.messaging_conversation_started_7d']);
+  const leads = getMetaActionCount(row, ['lead']);
   const purchases = getMetaActionCount(row, ['purchase', 'omni_purchase']);
   if (msgs > 0) return { count: msgs, type: 'MSG' };
   if (leads > 0) return { count: leads, type: 'LEAD' };
@@ -4134,7 +4134,7 @@ function normalizeMetaCampaignRow(row, campaign, adsets, ads) {
   const conv = getMetaPrimaryConversion(row);
   const spend = parseFloat(row.spend || 0);
   const clicks = parseFloat(row.clicks || 0);
-  const connectRate = clicks > 0 ? (getMetaActionCount(row, ['messaging_conversation_started', 'onsite_conversion.messaging']) / clicks) * 100 : 0;
+  const connectRate = clicks > 0 ? (getMetaActionCount(row, ['onsite_conversion.messaging_conversation_started_7d']) / clicks) * 100 : 0;
 
   return {
     campaign_id: row.campaign_id,
@@ -4701,8 +4701,8 @@ function metaAgg(data) {
     if (d.connect_rate) connectSum += parseFloat(d.connect_rate);
     for (const a of (d.actions||[])) {
       const v = parseInt(a.value||0);
-      if (a.action_type?.includes('messaging')) msgs += v;
-      if (a.action_type === 'lead' || a.action_type === 'onsite_conversion.lead_grouped') leads += v;
+      if (a.action_type === 'onsite_conversion.messaging_conversation_started_7d') msgs += v;
+      if (a.action_type === 'lead') leads += v;
       if (a.action_type === 'purchase' || a.action_type === 'omni_purchase') purchases += v;
     }
     for (const av of (d.action_values||[])) {
@@ -5120,7 +5120,7 @@ function renderMetaBreakdowns(data, client) {
     entry.spend += parseFloat(row.spend || 0);
     entry.impr += parseInt(row.impressions || 0);
     entry.clks += parseInt(row.clicks || 0);
-    entry.conv += getMetaActionCount(row, ['messaging_conversation_started', 'onsite_conversion.messaging', 'lead', 'purchase', 'omni_purchase']);
+    entry.conv += getMetaActionCount(row, ['onsite_conversion.messaging_conversation_started_7d', 'lead', 'purchase', 'omni_purchase']);
   }
   const ageSorted = [...ageMap.entries()].sort((a, b) => b[1].spend - a[1].spend);
   const ageMaxSpend = Math.max(...ageSorted.map(([, v]) => v.spend), 1);
@@ -5134,7 +5134,7 @@ function renderMetaBreakdowns(data, client) {
     entry.spend += parseFloat(row.spend || 0);
     entry.impr += parseInt(row.impressions || 0);
     entry.clks += parseInt(row.clicks || 0);
-    entry.conv += getMetaActionCount(row, ['messaging_conversation_started', 'onsite_conversion.messaging', 'lead', 'purchase', 'omni_purchase']);
+    entry.conv += getMetaActionCount(row, ['onsite_conversion.messaging_conversation_started_7d', 'lead', 'purchase', 'omni_purchase']);
   }
   const genderSorted = [...genderMap.entries()].sort((a, b) => b[1].spend - a[1].spend);
   const genderMaxSpend = Math.max(...genderSorted.map(([, v]) => v.spend), 1);
@@ -5150,7 +5150,7 @@ function renderMetaBreakdowns(data, client) {
     entry.spend += parseFloat(row.spend || 0);
     entry.impr += parseInt(row.impressions || 0);
     entry.clks += parseInt(row.clicks || 0);
-    entry.conv += getMetaActionCount(row, ['messaging_conversation_started', 'onsite_conversion.messaging', 'lead', 'purchase', 'omni_purchase']);
+    entry.conv += getMetaActionCount(row, ['onsite_conversion.messaging_conversation_started_7d', 'lead', 'purchase', 'omni_purchase']);
   }
   const placeSorted = [...placementMap.entries()].sort((a, b) => b[1].spend - a[1].spend);
   const placeMaxSpend = Math.max(...placeSorted.map(([, v]) => v.spend), 1);
@@ -5164,7 +5164,7 @@ function renderMetaBreakdowns(data, client) {
     entry.spend += parseFloat(row.spend || 0);
     entry.impr += parseInt(row.impressions || 0);
     entry.clks += parseInt(row.clicks || 0);
-    entry.conv += getMetaActionCount(row, ['messaging_conversation_started', 'onsite_conversion.messaging', 'lead', 'purchase', 'omni_purchase']);
+    entry.conv += getMetaActionCount(row, ['onsite_conversion.messaging_conversation_started_7d', 'lead', 'purchase', 'omni_purchase']);
   }
   const devSorted = [...deviceMap.entries()].sort((a, b) => b[1].spend - a[1].spend);
   const devMaxSpend = Math.max(...devSorted.map(([, v]) => v.spend), 1);
@@ -5290,7 +5290,7 @@ function renderMetaBreakdowns(data, client) {
             const spend = parseFloat(row.spend || 0);
             const clks = parseInt(row.clicks || 0);
             const impr = parseInt(row.impressions || 0);
-            const conv = getMetaActionCount(row, ['messaging_conversation_started', 'onsite_conversion.messaging', 'lead', 'purchase', 'omni_purchase']);
+            const conv = getMetaActionCount(row, ['onsite_conversion.messaging_conversation_started_7d', 'lead', 'purchase', 'omni_purchase']);
             const ctr = impr > 0 ? ((clks / impr) * 100).toFixed(2) : '0';
             const cpc = clks > 0 ? (spend / clks).toFixed(2) : '0';
             const cpa = conv > 0 ? fmtR(spend / conv) : '—';
