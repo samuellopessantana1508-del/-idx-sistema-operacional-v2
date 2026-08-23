@@ -4214,6 +4214,52 @@ function inferMetaTemperature(name = '') {
   return 'F';
 }
 
+function inferFunnelStage(campaignName = '', objective = '') {
+  const n = (campaignName || '').toUpperCase();
+  const o = (objective || '').toUpperCase();
+  if (n.includes('[MOFU]') || n.includes('ENGAJAMENTO') || n.includes('[VV]') || n.includes('VIDEO_VIEW') || o === 'POST_ENGAGEMENT' || o === 'VIDEO_VIEWS') return 'MOFU';
+  if (n.includes('[CONVERSAS]') || n.includes('[LEADS]') || n.includes('[CONVERSÃO]') || n.includes('[BOFU]') || o === 'MESSAGES' || o === 'LEAD_GENERATION' || o === 'CONVERSIONS' || o === 'OUTCOME_SALES') return 'BOFU';
+  if (n.includes('[TRÁFEGO]') || n.includes('[TOFU]') || n.includes('BRANDING') || n.includes('[VISITA') || o === 'REACH' || o === 'BRAND_AWARENESS' || o === 'LINK_CLICKS') return 'TOFU';
+  if (o.includes('MESSAGE') || o.includes('LEAD') || o.includes('CONVER')) return 'BOFU';
+  return 'TOFU';
+}
+
+function calcCreativeScore(ad, cpaMeta) {
+  let score = 50;
+  const ctr = parseFloat(ad.ctr || 0);
+  const cpa = parseFloat(ad.cpa || 0);
+  const freq = parseFloat(ad.freq || 0);
+  const conv = parseInt(ad.conv || 0);
+  const hookRate = parseFloat(ad.hook_rate || 0);
+  if (ctr >= 2) score += 15; else if (ctr >= 1) score += 5; else if (ctr < 0.5) score -= 15;
+  if (cpaMeta > 0 && cpa > 0) { if (cpa <= cpaMeta) score += 20; else if (cpa <= cpaMeta * 1.3) score += 5; else score -= 15; }
+  else if (conv > 0) score += 10;
+  if (freq > 3.5) score -= 20; else if (freq > 2.5) score -= 5;
+  if (hookRate > 30) score += 10; else if (hookRate > 0 && hookRate < 15) score -= 10;
+  if (conv >= 10) score += 10; else if (conv >= 3) score += 5;
+  return Math.max(0, Math.min(100, score));
+}
+
+function creativeVerdict(score) {
+  if (score >= 75) return { label: 'ESCALAR', cls: 'good', icon: '🚀' };
+  if (score >= 55) return { label: 'MANTER', cls: '', icon: '✅' };
+  if (score >= 35) return { label: 'OTIMIZAR', cls: 'warn', icon: '⚠️' };
+  return { label: 'PAUSAR', cls: 'alert', icon: '🛑' };
+}
+
+const META_BI_FILTERS = { funnel: 'all', status: 'all', campaign: 'all', sort: 'score', sortDir: 'desc' };
+
+function setMetaBIFilter(key, value) {
+  META_BI_FILTERS[key] = value;
+  renderMetaSubTab(CURRENT_CLIENT?.id);
+}
+
+function toggleMetaSort(col) {
+  if (META_BI_FILTERS.sort === col) META_BI_FILTERS.sortDir = META_BI_FILTERS.sortDir === 'desc' ? 'asc' : 'desc';
+  else { META_BI_FILTERS.sort = col; META_BI_FILTERS.sortDir = 'desc'; }
+  renderMetaSubTab(CURRENT_CLIENT?.id);
+}
+
 function buildMetaPacing(campaigns, insights, startDate, endDate) {
   const activeBudget = campaigns
     .filter(c => ['ACTIVE', 'PAUSED'].includes(c.effective_status || c.status))
@@ -5019,75 +5065,223 @@ function renderMetaConjuntos(data, client) {
 // ─── ABA CRIATIVOS ───────────────────────────────────────────────────────────
 function renderMetaCriativos(data, client) {
   const camps = data.campaign_insights || [];
-  let rows = '';
+  const cpaMeta = parseFloat(client.cpa_meta || 0);
+  const f = META_BI_FILTERS;
+
+  // Flatten all ads with enriched data
+  let allAds = [];
   for (const c of camps) {
+    const funnel = inferFunnelStage(c.campaign_name, c.objective);
     for (const ad of (c.ads || [])) {
-      const hookNum = parseFloat(ad.hook_rate||0);
-      const hookClass = hookNum > 30 ? 'color:var(--green)' : hookNum > 20 ? 'color:var(--yellow)' : hookNum > 0 ? 'color:var(--red)' : '';
-      const freqWarn = parseFloat(ad.freq||0) > 3.5;
-      const cpaNum = parseFloat(ad.cpa||0);
-      const cpaMeta = parseFloat(client.cpa_meta||0);
-      const cpaStyle = cpaMeta > 0 && cpaNum > 0 ? (cpaNum <= cpaMeta ? 'color:var(--green)' : cpaNum <= cpaMeta*1.3 ? 'color:var(--yellow)' : 'color:var(--red)') : '';
-      rows += `
-        <tr style="${ad.status!=='ACTIVE'?'opacity:.55':''}">
-          <td style="font-size:10px;color:var(--txt-muted);">${c.campaign_name.substring(0,25)}…</td>
-          <td><div style="font-size:11px;font-weight:600;">${ad.name}</div></td>
-          <td>${statusDot(ad.status)}</td>
-          <td><span style="font-size:10px;background:var(--surf-2);padding:2px 6px;border-radius:4px;">${ad.format||'—'}</span></td>
-          <td style="font-family:var(--mono);">${fmtR(ad.spend)}</td>
-          <td style="font-family:var(--mono);">${fmtN(ad.impr)}</td>
-          <td style="font-family:var(--mono);${hookClass}">${hookNum > 0 ? hookNum.toFixed(1)+'%' : '—'}</td>
-          <td style="font-family:var(--mono);${parseFloat(ad.ctr)<1?'color:var(--red)':''}">${ad.ctr}%</td>
-          <td style="font-family:var(--mono);">${ad.cpc}</td>
-          <td style="font-family:var(--mono);${freqWarn?'color:var(--red)':''}">${ad.freq}x${freqWarn?' ⚠':''}</td>
-          <td style="font-family:var(--mono);">${fmtN(ad.conv)}</td>
-          <td style="font-family:var(--mono);${cpaStyle}">${cpaNum > 0 ? fmtR(cpaNum) : ad.cpa === '—' ? '—' : '—'}</td>
-        </tr>`;
+      const score = calcCreativeScore(ad, cpaMeta);
+      allAds.push({ ...ad, campaign_name: c.campaign_name, campaign_id: c.campaign_id, objective: c.objective, temp: c.temp, funnel, score, verdict: creativeVerdict(score) });
     }
   }
 
+  // Unique campaigns for filter dropdown
+  const uniqueCamps = [...new Map(allAds.map(a => [a.campaign_id, a.campaign_name])).entries()];
+
+  // Apply filters
+  let filtered = allAds;
+  if (f.funnel !== 'all') filtered = filtered.filter(a => a.funnel === f.funnel);
+  if (f.status !== 'all') filtered = filtered.filter(a => f.status === 'active' ? a.status === 'ACTIVE' : a.status !== 'ACTIVE');
+  if (f.campaign !== 'all') filtered = filtered.filter(a => a.campaign_id === f.campaign);
+
+  // Sort
+  const sortKeys = { score: a => a.score, spend: a => parseFloat(a.spend||0), cpa: a => { const v = parseFloat(a.cpa||0); return v > 0 ? v : 99999; }, ctr: a => parseFloat(a.ctr||0), conv: a => parseInt(a.conv||0), freq: a => parseFloat(a.freq||0), impr: a => parseInt(a.impr||0), cpc: a => parseFloat(a.cpc||0) };
+  const sortFn = sortKeys[f.sort] || sortKeys.score;
+  filtered.sort((a, b) => f.sortDir === 'desc' ? sortFn(b) - sortFn(a) : sortFn(a) - sortFn(b));
+
+  // KPIs from filtered data
+  const active = filtered.filter(a => a.status === 'ACTIVE');
+  const totalSpend = filtered.reduce((s, a) => s + parseFloat(a.spend||0), 0);
+  const totalConv = filtered.reduce((s, a) => s + parseInt(a.conv||0), 0);
+  const avgCTR = filtered.length > 0 ? filtered.reduce((s, a) => s + parseFloat(a.ctr||0), 0) / filtered.length : 0;
+  const avgCPA = totalConv > 0 ? totalSpend / totalConv : 0;
+  const best = filtered.filter(a => parseInt(a.conv||0) > 0).sort((a, b) => parseFloat(a.cpa||999) - parseFloat(b.cpa||999))[0];
+  const worst = filtered.filter(a => parseFloat(a.spend||0) > 5 && parseInt(a.conv||0) === 0).sort((a, b) => parseFloat(b.spend||0) - parseFloat(a.spend||0))[0];
+  const toScale = filtered.filter(a => a.verdict.label === 'ESCALAR').length;
+  const toPause = filtered.filter(a => a.verdict.label === 'PAUSAR').length;
+
+  // Funnel stage breakdown
+  const funnelData = {};
+  for (const stage of ['TOFU','MOFU','BOFU']) {
+    const stageAds = allAds.filter(a => a.funnel === stage);
+    const stageSpend = stageAds.reduce((s, a) => s + parseFloat(a.spend||0), 0);
+    const stageConv = stageAds.reduce((s, a) => s + parseInt(a.conv||0), 0);
+    const stageImpr = stageAds.reduce((s, a) => s + parseInt(a.impr||0), 0);
+    const stageClks = stageAds.reduce((s, a) => s + parseInt(a.clks||0), 0);
+    funnelData[stage] = { count: stageAds.length, active: stageAds.filter(a => a.status === 'ACTIVE').length, spend: stageSpend, conv: stageConv, impr: stageImpr, clks: stageClks, cpa: stageConv > 0 ? stageSpend/stageConv : 0, ctr: stageImpr > 0 ? (stageClks/stageImpr)*100 : 0, cpm: stageImpr > 0 ? (stageSpend/stageImpr)*1000 : 0 };
+  }
+
+  const funnelColors = { TOFU: '#63B3ED', MOFU: '#F6AD55', BOFU: '#68D391' };
+  const funnelLabels = { TOFU: 'Topo — Awareness', MOFU: 'Meio — Engajamento', BOFU: 'Fundo — Conversão' };
+  const funnelMetrics = { TOFU: ['CPM','Alcance','Frequência'], MOFU: ['CTR','Hook Rate','CPC'], BOFU: ['Conversões','CPA','Connect Rate'] };
+  const totalFunnelSpend = Object.values(funnelData).reduce((s, d) => s + d.spend, 0);
+
+  const sortIcon = (col) => f.sort === col ? (f.sortDir === 'desc' ? ' ▼' : ' ▲') : '';
+  const sortHeader = (col, label) => `<th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="toggleMetaSort('${col}')">${label}${sortIcon(col)}</th>`;
+
+  // Render table rows
+  const rows = filtered.map(ad => {
+    const cpaNum = parseFloat(ad.cpa||0);
+    const cpaStyle = cpaMeta > 0 && cpaNum > 0 ? (cpaNum <= cpaMeta ? 'color:var(--green)' : cpaNum <= cpaMeta*1.3 ? 'color:var(--yellow)' : 'color:var(--red)') : '';
+    const freqWarn = parseFloat(ad.freq||0) > 3.5;
+    const ctrLow = parseFloat(ad.ctr||0) < 1;
+    const v = ad.verdict;
+    const scoreColor = ad.score >= 75 ? 'var(--green)' : ad.score >= 55 ? 'var(--accent)' : ad.score >= 35 ? 'var(--yellow)' : 'var(--red)';
+    const fColor = funnelColors[ad.funnel] || 'var(--txt-muted)';
+    return `<tr style="${ad.status!=='ACTIVE'?'opacity:.5':''}">
+      <td><div style="display:flex;align-items:center;gap:6px;">
+        <div style="width:28px;height:28px;border-radius:50%;background:${scoreColor}22;border:2px solid ${scoreColor};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:${scoreColor};">${ad.score}</div>
+        <span style="font-size:9px;font-weight:700;letter-spacing:.5px;color:${scoreColor};">${v.label}</span>
+      </div></td>
+      <td><span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;background:${fColor}18;color:${fColor};letter-spacing:.5px;">${ad.funnel}</span></td>
+      <td style="max-width:200px;"><div style="font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${ad.name}">${ad.name}</div>
+        <div style="font-size:9px;color:var(--txt-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;" title="${ad.campaign_name}">${ad.campaign_name.substring(0,35)}</div></td>
+      <td>${statusDot(ad.status)}</td>
+      <td style="font-family:var(--mono);font-size:11px;">${fmtR(ad.spend)}</td>
+      <td style="font-family:var(--mono);font-size:11px;">${fmtN(ad.impr)}</td>
+      <td style="font-family:var(--mono);font-size:11px;${ctrLow?'color:var(--red)':''}">${ad.ctr}%</td>
+      <td style="font-family:var(--mono);font-size:11px;">${ad.cpc}</td>
+      <td style="font-family:var(--mono);font-size:11px;${freqWarn?'color:var(--red)':''}">${ad.freq}x</td>
+      <td style="font-family:var(--mono);font-size:11px;font-weight:700;">${parseInt(ad.conv||0) > 0 ? fmtN(ad.conv) : '—'}</td>
+      <td style="font-family:var(--mono);font-size:11px;font-weight:700;${cpaStyle}">${cpaNum > 0 ? fmtR(cpaNum) : '—'}</td>
+    </tr>`;
+  }).join('');
+
   return `
+    <!-- FILTROS BI -->
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px;padding:10px 12px;background:var(--surf-2);border-radius:var(--radius);border:1px solid var(--border-light);">
+      <span style="font-size:10px;font-weight:700;color:var(--txt-muted);letter-spacing:.5px;margin-right:4px;">FILTROS</span>
+      <select onchange="setMetaBIFilter('funnel',this.value)" style="font-size:11px;padding:4px 8px;border-radius:4px;border:1px solid var(--border-light);background:var(--bg-primary);color:var(--txt-primary);">
+        <option value="all" ${f.funnel==='all'?'selected':''}>Todas fases</option>
+        <option value="TOFU" ${f.funnel==='TOFU'?'selected':''}>TOFU — Topo</option>
+        <option value="MOFU" ${f.funnel==='MOFU'?'selected':''}>MOFU — Meio</option>
+        <option value="BOFU" ${f.funnel==='BOFU'?'selected':''}>BOFU — Fundo</option>
+      </select>
+      <select onchange="setMetaBIFilter('status',this.value)" style="font-size:11px;padding:4px 8px;border-radius:4px;border:1px solid var(--border-light);background:var(--bg-primary);color:var(--txt-primary);">
+        <option value="all" ${f.status==='all'?'selected':''}>Todos status</option>
+        <option value="active" ${f.status==='active'?'selected':''}>Ativos</option>
+        <option value="paused" ${f.status==='paused'?'selected':''}>Pausados</option>
+      </select>
+      <select onchange="setMetaBIFilter('campaign',this.value)" style="font-size:11px;padding:4px 8px;border-radius:4px;border:1px solid var(--border-light);background:var(--bg-primary);color:var(--txt-primary);max-width:220px;">
+        <option value="all" ${f.campaign==='all'?'selected':''}>Todas campanhas</option>
+        ${uniqueCamps.map(([id, name]) => `<option value="${id}" ${f.campaign===id?'selected':''}>${name.substring(0,40)}</option>`).join('')}
+      </select>
+      <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
+        <span style="font-size:10px;color:var(--txt-muted);">${filtered.length} de ${allAds.length} criativos</span>
+        <button class="btn-small" onclick="META_BI_FILTERS.funnel='all';META_BI_FILTERS.status='all';META_BI_FILTERS.campaign='all';renderMetaSubTab(CURRENT_CLIENT?.id);" style="font-size:10px;padding:3px 8px;">Limpar</button>
+      </div>
+    </div>
+
+    <!-- KPIs DINÂMICOS -->
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:16px;">
+      ${metaKPICard('CRIATIVOS', `${active.length} ativos / ${filtered.length} total`, null, '', '')}
+      ${metaKPICard('GASTO TOTAL', fmtR(totalSpend), null, '', '')}
+      ${metaKPICard('CTR MÉDIO', avgCTR.toFixed(2)+'%', null, avgCTR >= 1.5 ? 'good' : avgCTR >= 1 ? '' : 'alert', '')}
+      ${metaKPICard('CPA GERAL', avgCPA > 0 ? fmtR(avgCPA) : '—', null, cpaMeta > 0 && avgCPA > 0 ? (avgCPA <= cpaMeta ? 'good' : avgCPA <= cpaMeta*1.3 ? 'warn' : 'alert') : '', '')}
+      ${metaKPICard('P/ ESCALAR', `🚀 ${toScale}`, null, toScale > 0 ? 'good' : '', '')}
+      ${metaKPICard('P/ PAUSAR', `🛑 ${toPause}`, null, toPause > 0 ? 'alert' : 'good', '')}
+    </div>
+
+    <!-- FUNIL VISUAL -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:20px;">
+      ${['TOFU','MOFU','BOFU'].map(stage => {
+        const d = funnelData[stage];
+        const color = funnelColors[stage];
+        const pctSpend = totalFunnelSpend > 0 ? (d.spend/totalFunnelSpend*100) : 0;
+        const isActive = f.funnel === stage;
+        return `<div class="card" style="padding:14px;cursor:pointer;border-color:${isActive ? color : 'var(--border-light)'};background:${isActive ? color+'0a' : 'var(--bg-primary)'};" onclick="setMetaBIFilter('funnel','${isActive ? 'all' : stage}')">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <div>
+              <div style="font-size:9px;font-weight:700;letter-spacing:.8px;color:${color};">${stage}</div>
+              <div style="font-size:12px;font-weight:600;color:var(--txt-primary);margin-top:2px;">${funnelLabels[stage]}</div>
+            </div>
+            <div style="font-size:18px;font-weight:800;color:${color};">${d.active}</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;">
+            <div style="font-size:10px;color:var(--txt-muted);">Gasto <strong style="color:var(--txt-secondary);">${fmtR(d.spend)}</strong></div>
+            <div style="font-size:10px;color:var(--txt-muted);text-align:right;">${pctSpend.toFixed(0)}% da verba</div>
+            <div style="font-size:10px;color:var(--txt-muted);">Conv <strong style="color:var(--txt-secondary);">${fmtN(d.conv)}</strong></div>
+            <div style="font-size:10px;color:var(--txt-muted);text-align:right;">CPA <strong style="color:var(--txt-secondary);">${d.cpa > 0 ? fmtR(d.cpa) : '—'}</strong></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;">
+            <div style="text-align:center;padding:4px 0;background:${color}0d;border-radius:3px;">
+              <div style="font-size:9px;color:var(--txt-muted);">${funnelMetrics[stage][0]}</div>
+              <div style="font-size:11px;font-weight:700;color:${color};">${stage==='TOFU' ? fmtR(d.cpm) : stage==='MOFU' ? d.ctr.toFixed(2)+'%' : fmtN(d.conv)}</div>
+            </div>
+            <div style="text-align:center;padding:4px 0;background:${color}0d;border-radius:3px;">
+              <div style="font-size:9px;color:var(--txt-muted);">${funnelMetrics[stage][1]}</div>
+              <div style="font-size:11px;font-weight:700;color:${color};">${stage==='TOFU' ? fmtN(d.impr) : stage==='MOFU' ? '—' : (d.cpa > 0 ? fmtR(d.cpa) : '—')}</div>
+            </div>
+            <div style="text-align:center;padding:4px 0;background:${color}0d;border-radius:3px;">
+              <div style="font-size:9px;color:var(--txt-muted);">${funnelMetrics[stage][2]}</div>
+              <div style="font-size:11px;font-weight:700;color:${color};">${stage==='TOFU' ? '—' : stage==='MOFU' ? fmtR(d.cpm) : '—'}</div>
+            </div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    ${best || worst ? `
+    <!-- DESTAQUES -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
+      ${best ? `<div class="card" style="padding:12px;border-color:rgba(34,197,94,.3);"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span style="font-size:16px;">🏆</span><span style="font-size:10px;font-weight:700;color:var(--green);letter-spacing:.5px;">MELHOR CRIATIVO</span></div>
+        <div style="font-size:12px;font-weight:700;color:var(--txt-primary);margin-bottom:4px;">${best.name}</div>
+        <div style="font-size:10px;color:var(--txt-muted);">${best.campaign_name.substring(0,50)}</div>
+        <div style="display:flex;gap:12px;margin-top:8px;font-size:11px;">
+          <span style="color:var(--green);font-weight:600;">CPA ${fmtR(best.cpa)}</span>
+          <span style="color:var(--txt-secondary);">${fmtN(best.conv)} conv</span>
+          <span style="color:var(--txt-secondary);">CTR ${best.ctr}%</span>
+          <span style="color:var(--txt-secondary);">Score ${best.score}</span>
+        </div></div>` : ''}
+      ${worst ? `<div class="card" style="padding:12px;border-color:rgba(239,68,68,.3);"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span style="font-size:16px;">💸</span><span style="font-size:10px;font-weight:700;color:var(--red);letter-spacing:.5px;">GASTANDO SEM RESULTADO</span></div>
+        <div style="font-size:12px;font-weight:700;color:var(--txt-primary);margin-bottom:4px;">${worst.name}</div>
+        <div style="font-size:10px;color:var(--txt-muted);">${worst.campaign_name.substring(0,50)}</div>
+        <div style="display:flex;gap:12px;margin-top:8px;font-size:11px;">
+          <span style="color:var(--red);font-weight:600;">R$ ${parseFloat(worst.spend).toFixed(2)} gasto</span>
+          <span style="color:var(--red);">0 conversões</span>
+          <span style="color:var(--txt-secondary);">CTR ${worst.ctr}%</span>
+          <span style="color:var(--txt-secondary);">Score ${worst.score}</span>
+        </div></div>` : ''}
+    </div>` : ''}
+
+    <!-- TABELA BI -->
     <div class="section" style="margin-top:0;">
-      <div class="section-title" style="margin-bottom:4px;">🎨 CRIATIVOS — ANÁLISE DE PERFORMANCE</div>
-      <div style="font-size:11px;color:var(--txt-muted);margin-bottom:12px;">Regra de ouro: 6 anúncios rodando + 6 prontos para ativar. Se não testou 10 variações do vencedor, está deixando dinheiro na mesa.</div>
       <div class="table-wrapper" style="overflow-x:auto;">
         <table>
           <thead><tr>
-            <th>CAMPANHA</th><th style="min-width:180px;">CRIATIVO</th><th>STATUS</th>
-            <th>FORMATO</th><th>GASTO</th><th>IMPRESSÕES</th>
-            <th>HOOK RATE</th><th>CTR</th><th>CPC</th><th>FREQ.</th>
-            <th>CONV.</th><th>CPA</th>
+            ${sortHeader('score','SCORE')}
+            <th>FUNIL</th>
+            <th style="min-width:200px;">CRIATIVO</th>
+            <th>STATUS</th>
+            ${sortHeader('spend','GASTO')}
+            ${sortHeader('impr','IMPR.')}
+            ${sortHeader('ctr','CTR')}
+            ${sortHeader('cpc','CPC')}
+            ${sortHeader('freq','FREQ.')}
+            ${sortHeader('conv','CONV.')}
+            ${sortHeader('cpa','CPA')}
           </tr></thead>
-          <tbody>${rows}</tbody>
+          <tbody>${rows || '<tr><td colspan="11" style="text-align:center;padding:30px;color:var(--txt-muted);">Nenhum criativo encontrado com esses filtros</td></tr>'}</tbody>
         </table>
       </div>
-      <div style="margin-top:14px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
-        <div class="card" style="border-color:rgba(34,197,94,.3);">
-          <div style="font-size:9px;font-weight:700;color:var(--green);letter-spacing:1px;margin-bottom:4px;">HOOK RATE — REFERÊNCIAS</div>
-          <div style="font-size:11px;color:var(--txt-secondary);">
-            <div style="color:var(--green);">✓ >30% — Gancho forte</div>
-            <div style="color:var(--yellow);">~ 20–30% — Médio, melhorar</div>
-            <div style="color:var(--red);">✗ <20% — Reescreva os 3s</div>
-          </div>
-        </div>
-        <div class="card" style="border-color:rgba(234,179,8,.3);">
-          <div style="font-size:9px;font-weight:700;color:var(--yellow);letter-spacing:1px;margin-bottom:4px;">QUANDO PAUSAR UM ANÚNCIO</div>
-          <div style="font-size:11px;color:var(--txt-secondary);">
-            CTR < 0,5% por 3+ dias<br>
-            CPM > 2× benchmark<br>
-            Frequência > 3,5x<br>
-            CPA > 130% da meta
-          </div>
-        </div>
-        <div class="card" style="border-color:rgba(110,127,153,.3);">
-          <div style="font-size:9px;font-weight:700;color:var(--accent);letter-spacing:1px;margin-bottom:4px;">COMO VARIAR O VENCEDOR</div>
-          <div style="font-size:11px;color:var(--txt-secondary);">
-            Trocar gancho (3s iniciais)<br>
-            Mudar formato (img/vídeo/carrossel)<br>
-            Alterar CTA e copy<br>
-            Regravar com final diferente
-          </div>
-        </div>
+    </div>
+
+    <!-- LEGENDA -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px;">
+      <div style="font-size:10px;padding:8px;background:var(--surf-2);border-radius:var(--radius);text-align:center;">
+        <span style="color:var(--green);font-weight:700;">🚀 ESCALAR</span><br><span style="color:var(--txt-muted);">Score 75+</span>
+      </div>
+      <div style="font-size:10px;padding:8px;background:var(--surf-2);border-radius:var(--radius);text-align:center;">
+        <span style="color:var(--accent);font-weight:700;">✅ MANTER</span><br><span style="color:var(--txt-muted);">Score 55-74</span>
+      </div>
+      <div style="font-size:10px;padding:8px;background:var(--surf-2);border-radius:var(--radius);text-align:center;">
+        <span style="color:var(--yellow);font-weight:700;">⚠️ OTIMIZAR</span><br><span style="color:var(--txt-muted);">Score 35-54</span>
+      </div>
+      <div style="font-size:10px;padding:8px;background:var(--surf-2);border-radius:var(--radius);text-align:center;">
+        <span style="color:var(--red);font-weight:700;">🛑 PAUSAR</span><br><span style="color:var(--txt-muted);">Score 0-34</span>
       </div>
     </div>`;
 }
