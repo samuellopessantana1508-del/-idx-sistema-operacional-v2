@@ -3992,7 +3992,7 @@ async function loadMetaDirect(metaAccount, startDate, endDate, options = {}) {
   const token = metaAccount.access_token;
 
   const tr = JSON.stringify({ since: startDate, until: endDate });
-  const [insights, campaigns, campaignInsights, adsetInsights, adInsights, ageGender, placements, devices] = await Promise.all([
+  const [insights, accountAggregate, campaigns, campaignInsights, adsetInsights, adInsights, ageGender, placements, devices] = await Promise.all([
     metaGraphGet(`${version}/${accountId}/insights`, {
       fields: 'date_start,date_stop,spend,impressions,reach,clicks,ctr,cpm,cpc,frequency,actions,action_values',
       level: 'account',
@@ -4001,6 +4001,12 @@ async function loadMetaDirect(metaAccount, startDate, endDate, options = {}) {
       limit: '500',
       access_token: token
     }),
+    metaGraphGet(`${version}/${accountId}/insights`, {
+      fields: 'spend,impressions,reach,clicks,ctr,cpm,cpc,frequency,actions,action_values',
+      level: 'account',
+      time_range: tr,
+      access_token: token
+    }).catch(() => ({ data: [] })),
     options.summaryOnly ? Promise.resolve({ data: [] }) : metaGraphGet(`${version}/${accountId}/campaigns`, {
       fields: 'id,name,objective,status,effective_status,daily_budget,lifetime_budget',
       limit: '200',
@@ -4062,6 +4068,7 @@ async function loadMetaDirect(metaAccount, startDate, endDate, options = {}) {
     source: 'graph',
     account_id: accountId,
     insights: insights.data || [],
+    aggregate: (accountAggregate.data || [])[0] || null,
     campaigns: campaigns.data || [],
     campaign_insights: campaignRows,
     pacing: buildMetaPacing(campaigns.data || [], insights.data || [], startDate, endDate),
@@ -4684,19 +4691,18 @@ function renderMetaSubTab(clientId) {
 // ─── helpers ─────────────────────────────────────────────────────────────────
 function metaAgg(data) {
   const insights = data.insights || [];
-  let spend=0, impr=0, reach=0, clks=0, freq=0, msgs=0, leads=0, purchases=0, revenue=0, hookSum=0, hookN=0, connectSum=0;
+  const agg = data.aggregate || null;
+  let spend=0, impr=0, clks=0, msgs=0, leads=0, purchases=0, revenue=0, hookSum=0, hookN=0, connectSum=0;
   for (const d of insights) {
     spend += parseFloat(d.spend||0);
     impr  += parseInt(d.impressions||0);
-    reach += parseInt(d.reach||0);
     clks  += parseInt(d.clicks||0);
-    freq  += parseFloat(d.frequency||0);
     if (d.hook_rate) { hookSum += parseFloat(d.hook_rate); hookN++; }
     if (d.connect_rate) connectSum += parseFloat(d.connect_rate);
     for (const a of (d.actions||[])) {
       const v = parseInt(a.value||0);
       if (a.action_type?.includes('messaging')) msgs += v;
-      if (a.action_type === 'lead') leads += v;
+      if (a.action_type === 'lead' || a.action_type === 'onsite_conversion.lead_grouped') leads += v;
       if (a.action_type === 'purchase' || a.action_type === 'omni_purchase') purchases += v;
     }
     for (const av of (d.action_values||[])) {
@@ -4704,16 +4710,17 @@ function metaAgg(data) {
     }
   }
   const dias = Math.max(insights.length, 1);
+  const reach = agg ? parseInt(agg.reach||0) : impr;
+  const freq  = agg ? parseFloat(agg.frequency||0) : (impr > 0 && reach > 0 ? impr/reach : 0);
   const ctr  = impr > 0 ? (clks/impr)*100 : 0;
   const cpm  = impr > 0 ? (spend/impr)*1000 : 0;
   const cpc  = clks > 0 ? spend/clks : 0;
-  const avgFreq = freq/dias;
   const totalConv = msgs || leads || purchases;
   const cpa  = totalConv > 0 ? spend/totalConv : 0;
   const roas = spend > 0 ? revenue/spend : 0;
   const hookRate = hookN > 0 ? hookSum/hookN : 0;
   const connectRate = dias > 0 ? connectSum/dias : 0;
-  return { spend, impr, reach, clks, ctr, cpm, cpc, freq: avgFreq, msgs, leads, purchases, revenue, cpa, roas, hookRate, connectRate, dias };
+  return { spend, impr, reach, clks, ctr, cpm, cpc, freq, msgs, leads, purchases, revenue, cpa, roas, hookRate, connectRate, dias };
 }
 
 function metaBmClass(val, meta, lowerBetter) {
