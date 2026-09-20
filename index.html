@@ -3601,6 +3601,9 @@ function openClientModal(id) {
 }
 
 async function saveClient() {
+  if (_savingLock.has('saveClient')) return;
+  _savingLock.add('saveClient');
+  try {
   const id = (document.getElementById('mo-client')?.dataset?.clientId || '').trim();
   const nome = (document.getElementById('mc-nome')?.value || '').trim();
   if (!nome) { showToast('Nome da empresa é obrigatório', 'error'); return; }
@@ -3647,12 +3650,13 @@ async function saveClient() {
       if (error) throw error;
       showToast('✅ Cliente criado com sucesso', 'success');
     }
-    closeModal('mo-client');
+    closeModal('mo-client', true);
     await loadClientes();
   } catch(e) {
     console.error('[IDX] Erro ao salvar cliente:', e);
     showToast('Erro ao salvar: ' + (e.message || JSON.stringify(e)), 'error');
   }
+  } finally { _savingLock.delete('saveClient'); }
 }
 
 async function openClient(id) {
@@ -4146,13 +4150,22 @@ async function metaGraphGet(path, params) {
     if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
   });
 
-  const response = await fetch(url.toString());
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.error) {
-    const err = data.error || {};
-    throw new Error(err.error_user_msg || err.message || `Meta Graph API HTTP ${response.status}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    const response = await fetch(url.toString(), { signal: controller.signal });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.error) {
+      const err = data.error || {};
+      throw new Error(err.error_user_msg || err.message || `Meta Graph API HTTP ${response.status}`);
+    }
+    return data;
+  } catch(e) {
+    if (e.name === 'AbortError') throw new Error('Tempo limite excedido ao consultar Meta Ads. Tente novamente.');
+    throw e;
+  } finally {
+    clearTimeout(timeout);
   }
-  return data;
 }
 
 function normalizeMetaAccountId(accountId) {
@@ -8683,6 +8696,9 @@ function togglePOPGuide() {
 }
 
 async function saveTask() {
+  if (_savingLock.has('saveTask')) return;
+  _savingLock.add('saveTask');
+  try {
   const titulo = document.getElementById('mt-titulo').value.trim();
   if (!titulo) { showToast('Título é obrigatório', 'error'); return; }
 
@@ -8720,7 +8736,7 @@ async function saveTask() {
       if (error) throw error;
       showToast('Atividade criada.', 'success');
     }
-    closeModal('mo-task');
+    closeModal('mo-task', true);
     refreshTaskView();
   } catch(e) {
     // Fallback localStorage
@@ -8734,9 +8750,10 @@ async function saveTask() {
     }
     localStorage.setItem('idx_tasks_local', JSON.stringify(localTasks));
     showToast('Atividade salva somente neste navegador; a sincronização está indisponível.', 'error');
-    closeModal('mo-task');
+    closeModal('mo-task', true);
     refreshTaskView();
   }
+  } finally { _savingLock.delete('saveTask'); }
 }
 
 async function toggleTask(evt, id) {
@@ -10160,50 +10177,74 @@ function calcAllScores() {
 }
 
 // ===== MODAL MANAGEMENT — usa <dialog> nativo (top layer) =====
-let _idxDialog = null;     // único <dialog> reutilizado
-let _activeModalId = null; // id do modal atualmente aberto
+let _idxDialog = null;
+let _activeModalId = null;
+const _modalsWithData = new Set(['mo-client', 'mo-task', 'mo-diary', 'mo-email', 'mo-metrics-month', 'mo-meta-account', 'mo-pesos']);
+
+function _modalHasUnsavedData() {
+  if (!_idxDialog || !_activeModalId) return false;
+  if (!_modalsWithData.has(_activeModalId)) return false;
+  const inputs = _idxDialog.querySelectorAll('input:not([type=hidden]):not([type=date]), textarea');
+  for (const input of inputs) {
+    const val = (input.value || '').trim();
+    if (val.length > 0 && val !== input.defaultValue?.trim()) return true;
+  }
+  return false;
+}
 
 function _getDialog() {
   if (!_idxDialog) {
     _idxDialog = document.createElement('dialog');
     _idxDialog.id = 'idx-modal-dialog';
     document.body.appendChild(_idxDialog);
-    // Fecha ao clicar no backdrop (fora do modal-content)
     _idxDialog.addEventListener('click', function(e) {
-      if (e.target === _idxDialog) closeModal(_activeModalId);
+      if (e.target === _idxDialog) _safeCloseModal();
     });
-    // Fecha com Escape
     _idxDialog.addEventListener('cancel', function(e) {
       e.preventDefault();
-      closeModal(_activeModalId);
+      _safeCloseModal();
     });
   }
   return _idxDialog;
+}
+
+function _safeCloseModal() {
+  if (_modalHasUnsavedData()) {
+    _showUnsavedConfirm();
+  } else {
+    closeModal(_activeModalId);
+  }
+}
+
+function _showUnsavedConfirm() {
+  const overlay = document.createElement('div');
+  overlay.id = 'idx-unsaved-confirm';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5);backdrop-filter:blur(2px);';
+  overlay.innerHTML = `
+    <div style="background:var(--bg-primary);border:1px solid var(--border-mid);border-radius:var(--radius-lg);padding:24px;max-width:360px;width:90%;text-align:center;">
+      <div style="font-size:15px;font-weight:700;color:var(--txt-primary);margin-bottom:8px;">Descartar alterações?</div>
+      <div style="font-size:13px;color:var(--txt-muted);margin-bottom:20px;line-height:1.5;">Você tem dados não salvos. Tem certeza que deseja sair sem salvar?</div>
+      <div style="display:flex;gap:8px;justify-content:center;">
+        <button onclick="document.getElementById('idx-unsaved-confirm').remove();" style="padding:8px 20px;border-radius:var(--radius);border:1px solid var(--border-light);background:var(--bg-primary);color:var(--txt-primary);cursor:pointer;font-size:13px;font-weight:600;">Voltar</button>
+        <button onclick="document.getElementById('idx-unsaved-confirm').remove();closeModal(_activeModalId,true);" style="padding:8px 20px;border-radius:var(--radius);border:none;background:var(--red);color:white;cursor:pointer;font-size:13px;font-weight:600;">Descartar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
 }
 
 function openModal(id) {
   try {
     const wrapper = document.getElementById(id);
     if (!wrapper) { console.error('[IDX] Modal wrapper não encontrado:', id); return; }
-
     const content = wrapper.querySelector('.modal-content');
     if (!content) { console.error('[IDX] .modal-content não encontrado em:', id); return; }
-
-    // Fechar qualquer modal aberto
-    if (_activeModalId) closeModal(_activeModalId);
-
+    if (_activeModalId) closeModal(_activeModalId, true);
     _activeModalId = id;
-
     const dlg = _getDialog();
-    // Limpa dialog e move o conteúdo para dentro dele
     dlg.innerHTML = '';
     dlg.appendChild(content);
-    // Guarda referência ao wrapper original para devolver ao fechar
     content._idxWrapper = wrapper;
-
     dlg.showModal();
-
-    // Foca no primeiro input/textarea
     setTimeout(() => {
       const first = dlg.querySelector('input:not([type=hidden]), select, textarea');
       if (first) first.focus();
@@ -10213,10 +10254,12 @@ function openModal(id) {
   }
 }
 
-function closeModal(id) {
+function closeModal(id, force) {
   try {
     if (!_idxDialog) return;
-    // Devolve o conteúdo ao wrapper original
+    if (!force && _modalHasUnsavedData()) { _showUnsavedConfirm(); return; }
+    const confirm = document.getElementById('idx-unsaved-confirm');
+    if (confirm) confirm.remove();
     const content = _idxDialog.querySelector('.modal-content');
     if (content && content._idxWrapper) {
       content._idxWrapper.appendChild(content);
@@ -10437,7 +10480,7 @@ async function sendReport() {
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
 
     showToast(`✅ Relatório enviado para ${to}`, 'success');
-    closeModal('mo-email');
+    closeModal('mo-email', true);
     // Limpa PDF temporário
     window._lastExportedPdf = null;
   } catch(e) {
@@ -10483,6 +10526,9 @@ function addDiaryEntry(evt) {
 }
 
 async function saveDiaryEntry() {
+  if (_savingLock.has('saveDiary')) return;
+  _savingLock.add('saveDiary');
+  try {
   const titulo = document.getElementById('md-titulo').value.trim();
   const tipo = document.getElementById('md-tipo').value;
   const data = document.getElementById('md-data').value;
@@ -10513,10 +10559,11 @@ async function saveDiaryEntry() {
     showToast('✅ Entrada salva localmente', 'success');
   }
 
-  closeModal('mo-diary');
+  closeModal('mo-diary', true);
   // Refresh if we're on the diary tab
   const content = document.getElementById('main-content');
   if (content && CURRENT_SUB_TAB === 'diario') renderClientDiario(content);
+  } finally { _savingLock.delete('saveDiary'); }
 }
 
 function addMetricsMonth(evt) {
@@ -10556,6 +10603,9 @@ function addMetricsMonth(evt) {
 }
 
 async function saveMetricsMonth() {
+  if (_savingLock.has('saveMetrics')) return;
+  _savingLock.add('saveMetrics');
+  try {
   const mes = parseInt(document.getElementById('mhm-mes').value);
   const ano = parseInt(document.getElementById('mhm-ano').value);
   const investimento = parseFloat(document.getElementById('mhm-inv').value) || 0;
@@ -10591,10 +10641,10 @@ async function saveMetricsMonth() {
     showToast(`✅ Métricas salvas localmente`, 'success');
   }
 
-  closeModal('mo-metrics-month');
-  // Refresh if on historico tab
+  closeModal('mo-metrics-month', true);
   const content = document.getElementById('main-content');
   if (content && CURRENT_SUB_TAB === 'historico') renderClientHistorico(content);
+  } finally { _savingLock.delete('saveMetrics'); }
 }
 
 // ===== GUIA DE CONEXÃO META ADS =====
@@ -10874,6 +10924,39 @@ async function exportMetaReport(clientId) {
   }
 }
 
+// ===== DEBOUNCE & LOADING =====
+const _savingLock = new Set();
+function withSaveLock(key, fn) {
+  return async function(...args) {
+    if (_savingLock.has(key)) return;
+    _savingLock.add(key);
+    const btn = document.querySelector(`[onclick*="${key}"]`) || document.activeElement;
+    const origText = btn?.textContent;
+    if (btn?.tagName === 'BUTTON') { btn.disabled = true; btn.textContent = 'Salvando...'; }
+    try { await fn.apply(this, args); }
+    finally {
+      _savingLock.delete(key);
+      if (btn?.tagName === 'BUTTON') { btn.disabled = false; btn.textContent = origText; }
+    }
+  };
+}
+
+function showLoadingOverlay(msg) {
+  let el = document.getElementById('idx-loading-overlay');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'idx-loading-overlay';
+    el.style.cssText = 'position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.7);backdrop-filter:blur(1px);';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `<div style="text-align:center;"><div style="width:28px;height:28px;border:3px solid var(--border-light);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;margin:0 auto 10px;"></div><div style="font-size:13px;color:var(--txt-muted);">${msg || 'Carregando...'}</div></div>`;
+  el.style.display = 'flex';
+}
+function hideLoadingOverlay() {
+  const el = document.getElementById('idx-loading-overlay');
+  if (el) el.style.display = 'none';
+}
+
 // ===== UTILS =====
 function showToast(msg, type = 'default') {
   const t = document.getElementById('toast');
@@ -10887,6 +10970,13 @@ const fmtR = v => 'R$ ' + parseFloat(v || 0).toLocaleString('pt-BR', { minimumFr
 const fmtN = v => parseInt(v || 0).toLocaleString('pt-BR');
 const fmtP = v => parseFloat(v || 0).toFixed(2).replace('.', ',') + '%';
 const fmtDate = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('pt-BR') : '—';
+
+// ===== GLOBAL ERROR HANDLER =====
+window.addEventListener('unhandledrejection', function(e) {
+  console.error('[IDX] Unhandled rejection:', e.reason);
+  hideLoadingOverlay();
+  META_STATE.loading = false;
+});
 
 // ===== INIT STARTUP =====
 window.addEventListener('DOMContentLoaded', initApp);
