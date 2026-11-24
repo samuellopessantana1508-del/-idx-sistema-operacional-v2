@@ -70,3 +70,36 @@ test('Banco reconstruído cobre o sistema e protege credenciais', () => {
   assert.doesNotMatch(html, /select\('ad_account_id, access_token'\)/);
   assert.doesNotMatch(html, /Perfil não encontrado, usando admin padrão/);
 });
+
+test('Meta ao vivo: token só no servidor, leitura e otimização via meta-live', () => {
+  const fn = readFileSync(resolve(root, 'supabase', 'functions', 'meta-live', 'index.ts'), 'utf8');
+  // O navegador não lê mais token nem fala direto com a Graph API para carregar dados.
+  assert.doesNotMatch(html, /get_meta_token/);
+  assert.doesNotMatch(html, /META_STATE\.token/);
+  assert.match(html, /functions\/v1\/meta-live/);
+  assert.match(html, /async function metaGraphGet[\s\S]*?metaLiveCall\('graph_get'/);
+  // Atualização automática e selo ao vivo.
+  assert.match(html, /META_LIVE_INTERVAL_MS = 60000/);
+  assert.match(html, /AO VIVO/);
+  // Otimização exige confirmação do usuário e é enviada com confirm: true.
+  assert.match(html, /async function metaOptimize/);
+  assert.match(html, /window\.confirm\(`\$\{verbo\} \$\{tipoLabel\}/);
+  assert.match(html, /confirm: true/);
+  // Servidor: só chama service_role para ler credenciais, valida dono do objeto e audita.
+  assert.match(fn, /get_client_meta_credentials/);
+  assert.match(fn, /body\.confirm !== true/);
+  assert.match(fn, /Este objeto não pertence à conta Meta do cliente/);
+  assert.match(fn, /meta_action_log/);
+  assert.match(fn, /Authorization: `Bearer \$\{token\}`/);
+  assert.doesNotMatch(fn, /console\.(log|error)\([^)]*token/i);
+});
+
+test('Migração de auditoria Meta protege o log de ações', () => {
+  const audit = readFileSync(resolve(
+    root, 'supabase', 'migrations', '20261123230000_meta_live_audit_log.sql'
+  ), 'utf8');
+  assert.match(audit, /create table if not exists public\.meta_action_log/);
+  assert.match(audit, /enable row level security/);
+  assert.match(audit, /grant select on public\.meta_action_log to authenticated/);
+  assert.doesNotMatch(audit, /grant (insert|update|delete)/i);
+});

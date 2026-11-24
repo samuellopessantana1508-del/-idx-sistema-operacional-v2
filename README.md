@@ -49,6 +49,27 @@ Tokens de acesso do Meta não ficam mais em tabela pública nem são enviados ao
 navegador. O sistema grava a credencial pela função `save_client_meta_account`, e a
 leitura fica restrita à integração server-side com papel `service_role`.
 
+## Meta Ads ao vivo e otimização
+
+O token do Meta fica só no servidor. O navegador chama a Edge Function
+`supabase/functions/meta-live`, que lê as credenciais com `service_role`, consulta a
+Meta Marketing API e devolve apenas os dados.
+
+- **Ao vivo:** o painel Meta atualiza sozinho a cada 60 s enquanto aberto (quando o
+  período inclui hoje). A Meta publica insights com alguns minutos de atraso.
+- **Otimização:** pausar/ativar campanhas, conjuntos e anúncios e alterar o orçamento
+  diário. Toda ação pede confirmação, é validada no servidor (o objeto precisa
+  pertencer à conta do cliente; aumento máximo de 2x por vez), é conferida de volta
+  na Meta e fica registrada em `public.meta_action_log`.
+- **Permissões do token:** `ads_read` para leitura; `ads_management` para otimizar.
+
+Publicação (uma vez):
+
+```
+supabase db push                      # cria public.meta_action_log
+supabase functions deploy meta-live
+```
+
 ## Demonstração local
 
 Para validar a interface interna sem usar dados reais, sirva esta pasta localmente e

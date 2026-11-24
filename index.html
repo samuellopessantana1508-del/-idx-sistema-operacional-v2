@@ -2528,8 +2528,12 @@ let META_STATE = {
   campaigns: [],
   charts: {},
   accountId: null,
-  token: null,
+  clientId: null,
   loading: false,
+  liveOn: true,
+  liveTimer: null,
+  lastUpdate: null,
+  liveError: null,
   accounts: [],
   selectedAccountIdx: 0
 };
@@ -3940,7 +3944,9 @@ function renderClientMetaDashboard(content) {
   loadMetaDashboard(CURRENT_CLIENT.id);
 }
 
-async function loadMetaDashboard(clientId) {
+async function loadMetaDashboard(clientId, opts = {}) {
+  const silent = !!opts.silent;
+  if (META_STATE.loading) return;
   const startDate = document.getElementById('meta-date-start')?.value;
   const endDate = document.getElementById('meta-date-end')?.value;
   const compareStart = document.getElementById('meta-compare-start')?.value;
@@ -3953,9 +3959,10 @@ async function loadMetaDashboard(clientId) {
   META_STATE.compareStart = compareStart;
   META_STATE.compareEnd = compareEnd;
   META_STATE.loading = true;
+  META_STATE.clientId = clientId;
 
   const content = document.getElementById('meta-content');
-  content.innerHTML = '<div class="meta-loading"><div class="loader"></div><div>Carregando métricas Meta...</div></div>';
+  if (!silent) content.innerHTML = '<div class="meta-loading"><div class="loader"></div><div>Carregando métricas Meta...</div></div>';
 
   try {
     const { data: metaAccounts, error: metaAccountError } = await SB
@@ -3981,70 +3988,55 @@ async function loadMetaDashboard(clientId) {
     if (META_STATE.selectedAccountIdx >= metaAccounts.length) META_STATE.selectedAccountIdx = 0;
     const selectedAccount = metaAccounts[META_STATE.selectedAccountIdx];
 
-    const { data: creds, error: credsErr } = await SB.rpc('get_meta_token', { p_client_id: clientId });
-    if (credsErr || !creds?.[0]?.access_token) {
-      renderMetaEmptyState('Token não encontrado', 'Configure o Access Token na tela de Conectar Conta Meta Ads.');
-      return;
-    }
-
+    // O token fica só no servidor (função meta-live). Aqui o navegador nunca vê o token.
     META_STATE.accountId = selectedAccount.ad_account_id;
-    META_STATE.token = creds[0].access_token;
-    META_STATE.data = await loadMetaDirect(
-      { ad_account_id: selectedAccount.ad_account_id, access_token: creds[0].access_token },
+    const fresh = await loadMetaDirect(
+      { ad_account_id: selectedAccount.ad_account_id },
       startDate, endDate
     );
+    let freshCompare = null;
     if (compareStart && compareEnd) {
       const cmpData = await loadMetaDirect(
-        { ad_account_id: selectedAccount.ad_account_id, access_token: creds[0].access_token },
+        { ad_account_id: selectedAccount.ad_account_id },
         compareStart, compareEnd, { summaryOnly: true }
       );
-      META_STATE.compareData = { insights: cmpData.insights || [], campaigns: [] };
-    } else {
-      META_STATE.compareData = null;
+      freshCompare = { insights: cmpData.insights || [], campaigns: [] };
     }
+    META_STATE.data = fresh;
+    META_STATE.compareData = freshCompare;
+    META_STATE.lastUpdate = new Date();
+    META_STATE.liveError = null;
 
+    const scroller = document.getElementById('main-content');
+    const keepTop = silent && scroller ? scroller.scrollTop : null;
     renderMetaDashboard(clientId);
+    if (keepTop !== null) scroller.scrollTop = keepTop;
+    startMetaLive();
   } catch(e) {
     console.error('[IDX] Erro ao carregar Meta Ads:', e);
-    META_STATE.data = null;
-    META_STATE.compareData = null;
-    renderMetaError(e);
-    showToast('Erro ao carregar dados reais do Meta Ads', 'error');
+    if (silent && META_STATE.data) {
+      // Atualização automática falhou: mantém os últimos dados e avisa no selo "ao vivo".
+      META_STATE.liveError = e.message || 'falha ao atualizar';
+      updateMetaLiveBadge();
+    } else if (e.status === 404) {
+      META_STATE.data = null;
+      META_STATE.compareData = null;
+      renderMetaEmptyState('Conta Meta não conectada', 'Abra Configurar, informe o token e a conta de anúncios e clique em Salvar e Conectar.');
+    } else {
+      META_STATE.data = null;
+      META_STATE.compareData = null;
+      renderMetaError(e);
+      showToast('Erro ao carregar dados reais do Meta Ads', 'error');
+    }
   } finally {
     META_STATE.loading = false;
   }
 }
 
-async function loadMetaViaProxy(clientId, startDate, endDate, compareStart, compareEnd) {
-  const { data: { session } } = await SB.auth.getSession();
-  if (!session?.access_token) throw new Error('Sessão expirada. Faça login novamente.');
-
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/meta-proxy`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${session.access_token}`
-    },
-    body: JSON.stringify({
-      action: 'get_account_insights',
-      client_id: clientId,
-      date_start: startDate,
-      date_end: endDate,
-      compare_start: compareStart || null,
-      compare_end: compareEnd || null
-    })
-  });
-
-  const apiData = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(apiData.error || apiData.message || `meta-proxy HTTP ${res.status}`);
-  if (apiData.error) throw new Error(apiData.error);
-  return { ...apiData, source: 'proxy' };
-}
-
 async function loadMetaDirect(metaAccount, startDate, endDate, options = {}) {
   const version = 'v25.0';
   const accountId = normalizeMetaAccountId(metaAccount.ad_account_id);
-  const token = metaAccount.access_token;
+  const token = undefined; // token só existe no servidor (meta-live)
 
   const tr = JSON.stringify({ since: startDate, until: endDate });
   const [insights, accountAggregate, campaigns, campaignInsights, adsetInsights, adInsights, adsetMgmt, adMgmt, ageGender, placements, devices] = await Promise.all([
@@ -4063,7 +4055,7 @@ async function loadMetaDirect(metaAccount, startDate, endDate, options = {}) {
       access_token: token
     }).catch(() => ({ data: [] })),
     options.summaryOnly ? Promise.resolve({ data: [] }) : metaGraphGet(`${version}/${accountId}/campaigns`, {
-      fields: 'id,name,objective,status,effective_status,daily_budget,lifetime_budget',
+      fields: 'id,name,objective,status,effective_status,daily_budget,lifetime_budget,budget_remaining',
       limit: '200',
       access_token: token
     }),
@@ -4089,7 +4081,7 @@ async function loadMetaDirect(metaAccount, startDate, endDate, options = {}) {
       access_token: token
     }),
     options.summaryOnly ? Promise.resolve({ data: [] }) : metaGraphGet(`${version}/${accountId}/adsets`, {
-      fields: 'id,name,status,effective_status',
+      fields: 'id,name,status,effective_status,daily_budget,lifetime_budget',
       limit: '500',
       access_token: token
     }).catch(() => ({ data: [] })),
@@ -4137,6 +4129,8 @@ async function loadMetaDirect(metaAccount, startDate, endDate, options = {}) {
     insights: insights.data || [],
     aggregate: (accountAggregate.data || [])[0] || null,
     campaigns: campaigns.data || [],
+    adsets_mgmt: adsetMgmt.data || [],
+    ads_mgmt: adMgmt.data || [],
     campaign_insights: campaignRows,
     pacing: buildMetaPacing(campaigns.data || [], insights.data || [], startDate, endDate),
     age_gender: ageGender.data || [],
@@ -4145,28 +4139,55 @@ async function loadMetaDirect(metaAccount, startDate, endDate, options = {}) {
   };
 }
 
-async function metaGraphGet(path, params) {
-  const url = new URL(`https://graph.facebook.com/${path}`);
-  Object.entries(params).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
-  });
+// ===== META AO VIVO (via função de servidor meta-live) =====
+async function metaLiveCall(action, payload = {}) {
+  const clientId = META_STATE.clientId || CURRENT_CLIENT?.id;
+  if (!clientId) throw new Error('Nenhum cliente selecionado.');
+  const { data: { session } } = await SB.auth.getSession();
+  if (!session?.access_token) throw new Error('Sessão expirada. Faça login novamente.');
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+  const timeout = setTimeout(() => controller.abort(), 60000);
   try {
-    const response = await fetch(url.toString(), { signal: controller.signal });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.error) {
-      const err = data.error || {};
-      throw new Error(err.error_user_msg || err.message || `Meta Graph API HTTP ${response.status}`);
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/meta-live`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': SUPABASE_KEY
+      },
+      body: JSON.stringify({ action, client_id: clientId, ...payload }),
+      signal: controller.signal
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 404 && !data.error) {
+      const err = new Error('Função meta-live não encontrada no Supabase. Peça para publicar: supabase functions deploy meta-live');
+      err.status = 503;
+      throw err;
+    }
+    if (!res.ok || data.error) {
+      const err = new Error(data.error || `Meta Live HTTP ${res.status}`);
+      err.status = res.status;
+      err.code = data.code;
+      throw err;
     }
     return data;
   } catch(e) {
     if (e.name === 'AbortError') throw new Error('Tempo limite excedido ao consultar Meta Ads. Tente novamente.');
+    if (e instanceof TypeError) throw new Error('Não foi possível falar com o servidor de integração Meta (meta-live). Verifique a conexão e se a função foi publicada.');
     throw e;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function metaGraphGet(path, params) {
+  const clean = {};
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (key === 'access_token') return;
+    if (value !== undefined && value !== null && value !== '') clean[key] = String(value);
+  });
+  return metaLiveCall('graph_get', { path, params: clean });
 }
 
 function normalizeMetaAccountId(accountId) {
@@ -4560,82 +4581,34 @@ async function diagnoseMeta() {
     addStep('Conta Meta configurada', 'fail', e.message);
   }
 
-  // Step 4: Check get_meta_token RPC
-  let tokenValue = null;
-  let adAccountId = null;
+  // Step 4: conexão ao vivo (token e conta validados no servidor, sem expor o token)
   try {
-    const { data: creds, error } = await SB.rpc('get_meta_token', { p_client_id: CURRENT_CLIENT.id });
-    if (error) throw error;
-    if (!creds || creds.length === 0 || !creds[0]?.access_token) {
-      addStep('Token de acesso (RPC)', 'fail', 'Nenhum token encontrado. Configure em ⚙️ Configurar.');
+    META_STATE.clientId = CURRENT_CLIENT.id;
+    const st = await metaLiveCall('status');
+    if (!st.connected) {
+      addStep('Token de acesso (servidor)', 'fail', 'Nenhum token salvo. Configure em ⚙️ Configurar.');
     } else {
-      tokenValue = creds[0].access_token;
-      adAccountId = creds[0].ad_account_id;
-      const masked = tokenValue.substring(0, 10) + '...' + tokenValue.substring(tokenValue.length - 6);
-      addStep('Token de acesso (RPC)', 'ok', `Token encontrado: ${masked}`);
+      addStep('Token de acesso (servidor)', 'ok', 'Token salvo com segurança no servidor (não exibido).');
+      addStep('Token válido (API)', 'ok', 'A Meta aceitou o token.');
+      const acc = st.account || {};
+      const statusMap = { 1: 'Ativa', 2: 'Desativada', 3: 'Não publicada', 7: 'Pendente', 9: 'Em análise', 101: 'Fechada' };
+      addStep('Acesso à conta de anúncios', acc.account_status === 1 ? 'ok' : 'warn',
+        `${acc.name || st.ad_account_id} — Status: ${statusMap[acc.account_status] || acc.account_status} — Moeda: ${acc.currency || '—'}`);
+      try {
+        const today = new Date().toISOString().split('T')[0];
+        const d7 = new Date(Date.now() - 7*86400000).toISOString().split('T')[0];
+        const ins = await metaGraphGet(`v25.0/${st.ad_account_id}/insights`, { fields: 'spend,impressions', time_range: JSON.stringify({ since: d7, until: today }) });
+        if (ins.data && ins.data.length > 0) {
+          addStep('Leitura de insights', 'ok', `Últimos 7 dias — Gasto: R$ ${parseFloat(ins.data[0].spend || 0).toFixed(2)}`);
+        } else {
+          addStep('Leitura de insights', 'warn', 'Nenhum dado nos últimos 7 dias. A conta pode estar sem campanhas ativas.');
+        }
+      } catch(e) {
+        addStep('Leitura de insights', 'fail', e.message);
+      }
     }
   } catch(e) {
-    addStep('Token de acesso (RPC)', 'fail', `Erro ao buscar token: ${e.message}`);
-  }
-
-  // Step 5: Test token against Meta API
-  if (tokenValue) {
-    try {
-      const resp = await fetch(`https://graph.facebook.com/v25.0/me?access_token=${tokenValue}`);
-      const data = await resp.json();
-      if (data.error) {
-        const code = data.error.code || '';
-        const msg = data.error.message || '';
-        if (code === 190) {
-          addStep('Token válido (API)', 'fail', 'Token EXPIRADO ou REVOGADO. Gere um novo token no Business Manager.');
-        } else {
-          addStep('Token válido (API)', 'fail', `Erro ${code}: ${msg}`);
-        }
-      } else {
-        addStep('Token válido (API)', 'ok', `Autenticado como: ${data.name || data.id} (ID: ${data.id})`);
-      }
-    } catch(e) {
-      addStep('Token válido (API)', 'fail', `Erro de rede: ${e.message}`);
-    }
-  }
-
-  // Step 6: Test ad account access
-  if (tokenValue && adAccountId) {
-    try {
-      const accId = adAccountId.startsWith('act_') ? adAccountId : 'act_' + adAccountId;
-      const resp = await fetch(`https://graph.facebook.com/v25.0/${accId}?fields=name,account_status,currency&access_token=${tokenValue}`);
-      const data = await resp.json();
-      if (data.error) {
-        addStep('Acesso à conta de anúncios', 'fail', `Sem acesso à ${accId}: ${data.error.message}`);
-      } else {
-        const statusMap = { 1: 'Ativa', 2: 'Desativada', 3: 'Não publicada', 7: 'Pendente', 9: 'Em análise', 101: 'Fechada' };
-        addStep('Acesso à conta de anúncios', 'ok', `${data.name} — Status: ${statusMap[data.account_status] || data.account_status} — Moeda: ${data.currency}`);
-      }
-    } catch(e) {
-      addStep('Acesso à conta de anúncios', 'fail', `Erro de rede: ${e.message}`);
-    }
-  }
-
-  // Step 7: Test insights read
-  if (tokenValue && adAccountId) {
-    try {
-      const accId = adAccountId.startsWith('act_') ? adAccountId : 'act_' + adAccountId;
-      const today = new Date().toISOString().split('T')[0];
-      const d7 = new Date(Date.now() - 7*86400000).toISOString().split('T')[0];
-      const tr = JSON.stringify({ since: d7, until: today });
-      const resp = await fetch(`https://graph.facebook.com/v25.0/${accId}/insights?fields=spend,impressions&time_range=${encodeURIComponent(tr)}&access_token=${tokenValue}`);
-      const data = await resp.json();
-      if (data.error) {
-        addStep('Leitura de insights', 'fail', data.error.message);
-      } else if (data.data && data.data.length > 0) {
-        const spend = parseFloat(data.data[0].spend || 0);
-        addStep('Leitura de insights', 'ok', `Últimos 7 dias: ${data.data.length} registro(s) — Gasto: R$ ${spend.toFixed(2)}`);
-      } else {
-        addStep('Leitura de insights', 'warn', 'Nenhum dado nos últimos 7 dias. A conta pode estar sem campanhas ativas.');
-      }
-    } catch(e) {
-      addStep('Leitura de insights', 'fail', `Erro de rede: ${e.message}`);
-    }
+    addStep('Conexão com o servidor Meta', 'fail', e.message);
   }
 
   renderDiagResult(content, steps);
@@ -4852,7 +4825,10 @@ function renderMetaDashboard(clientId) {
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
       ${accountSelector}
       <div style="font-size:11px;color:var(--txt-muted);">Período: <strong style="color:var(--txt-secondary);">${META_STATE.dateStart} → ${META_STATE.dateEnd}</strong></div>
-      <div style="font-size:10px;color:var(--txt-muted);background:var(--bg-accent);padding:3px 8px;border-radius:4px;border:1px solid var(--border-light);">📊 ${data.insights?.length || 0} dias · ${data.source === 'proxy' ? 'Meta via Supabase' : 'Meta Graph API'}${META_STATE.accounts.length > 1 ? ' · Conta '+(META_STATE.selectedAccountIdx+1)+'/'+META_STATE.accounts.length : ''}</div>
+      <div style="font-size:10px;color:var(--txt-muted);background:var(--bg-accent);padding:3px 8px;border-radius:4px;border:1px solid var(--border-light);">📊 ${data.insights?.length || 0} dias · Meta Ads via servidor seguro${META_STATE.accounts.length > 1 ? ' · Conta '+(META_STATE.selectedAccountIdx+1)+'/'+META_STATE.accounts.length : ''}</div>
+      <div id="meta-live-badge" style="font-size:10px;padding:3px 8px;border-radius:4px;border:1px solid var(--border-light);"></div>
+      <button class="btn-small" id="meta-live-toggle" onclick="toggleMetaLive()" style="font-size:10px;padding:3px 8px;"></button>
+      <button class="btn-small" onclick="loadMetaDashboard('${clientId}', {silent:true})" style="font-size:10px;padding:3px 8px;">🔄 Atualizar agora</button>
       <div style="margin-left:auto;display:flex;gap:6px;">
         <button class="btn-small" onclick="openModal('mo-meta-account')" style="font-size:11px;">🔗 Conectar Meta</button>
         <button class="btn-small" onclick="openEmailModal()" style="font-size:11px;">📧 Relatório</button>
@@ -4864,7 +4840,112 @@ function renderMetaDashboard(clientId) {
     <div id="meta-sub-content"></div>
   `;
 
+  updateMetaLiveBadge();
   renderMetaSubTab(clientId);
+}
+
+// ===== META AO VIVO: atualização automática =====
+const META_LIVE_INTERVAL_MS = 60000;
+
+function isMetaDashboardVisible() {
+  return CURRENT_TAB === 'cliente-detail' && CURRENT_SUB_TAB === 'meta-dashboard' && !!document.getElementById('meta-content');
+}
+
+function startMetaLive() {
+  if (META_STATE.liveTimer) return;
+  META_STATE.liveTimer = setInterval(() => {
+    if (!isMetaDashboardVisible()) { stopMetaLive(); return; }
+    if (!META_STATE.liveOn || document.hidden || META_STATE.loading || META_STATE.optimizing) return;
+    // Só atualiza sozinho quando o período inclui hoje; períodos antigos não mudam.
+    const today = new Date().toISOString().split('T')[0];
+    if (META_STATE.dateEnd && META_STATE.dateEnd < today) return;
+    if (CURRENT_CLIENT?.id) loadMetaDashboard(CURRENT_CLIENT.id, { silent: true });
+  }, META_LIVE_INTERVAL_MS);
+}
+
+function stopMetaLive() {
+  if (META_STATE.liveTimer) clearInterval(META_STATE.liveTimer);
+  META_STATE.liveTimer = null;
+}
+
+function toggleMetaLive() {
+  META_STATE.liveOn = !META_STATE.liveOn;
+  updateMetaLiveBadge();
+  if (META_STATE.liveOn && CURRENT_CLIENT?.id) loadMetaDashboard(CURRENT_CLIENT.id, { silent: true });
+}
+
+function updateMetaLiveBadge() {
+  const badge = document.getElementById('meta-live-badge');
+  const toggle = document.getElementById('meta-live-toggle');
+  if (!badge || !toggle) return;
+  const hora = META_STATE.lastUpdate ? META_STATE.lastUpdate.toLocaleTimeString('pt-BR') : '—';
+  if (META_STATE.liveError) {
+    badge.innerHTML = `<span style="color:var(--red);font-weight:700;">● FALHA AO ATUALIZAR</span> <span style="color:var(--txt-muted);">· dados de ${hora} · ${META_STATE.liveError}</span>`;
+  } else if (META_STATE.liveOn) {
+    badge.innerHTML = `<span style="color:var(--green);font-weight:700;">● AO VIVO</span> <span style="color:var(--txt-muted);" title="A Meta atualiza os insights com alguns minutos de atraso">· atualizado ${hora} · a cada 60s</span>`;
+  } else {
+    badge.innerHTML = `<span style="color:var(--txt-muted);font-weight:700;">○ PAUSADO</span> <span style="color:var(--txt-muted);">· atualizado ${hora}</span>`;
+  }
+  toggle.textContent = META_STATE.liveOn ? '⏸ Pausar ao vivo' : '▶ Retomar ao vivo';
+}
+
+// ===== META: OTIMIZAÇÃO (pausar/ativar e orçamento) =====
+function metaObjInfo(type, id) {
+  const d = META_STATE.data || {};
+  const list = type === 'campaign' ? d.campaigns : type === 'adset' ? d.adsets_mgmt : d.ads_mgmt;
+  const o = (list || []).find(x => String(x.id) === String(id));
+  return o ? { name: o.name, status: o.status, effective: o.effective_status, dailyBudget: o.daily_budget ? parseInt(o.daily_budget, 10) : null } : null;
+}
+
+function metaActionButtons(type, id) {
+  const info = metaObjInfo(type, id);
+  if (!info) return '<span style="font-size:10px;color:var(--txt-muted);">—</span>';
+  const btn = 'font-size:10px;padding:2px 7px;margin-right:4px;';
+  let html = '';
+  if (info.status === 'ACTIVE') html += `<button class="btn-small" style="${btn}" title="Pausar na Meta" onclick="metaOptimize('${type}','${id}','pause')">⏸ Pausar</button>`;
+  else if (info.status === 'PAUSED') html += `<button class="btn-small" style="${btn}" title="Ativar na Meta" onclick="metaOptimize('${type}','${id}','activate')">▶ Ativar</button>`;
+  if (type !== 'ad' && info.dailyBudget) html += `<button class="btn-small" style="${btn}" title="Alterar orçamento diário" onclick="metaOptimize('${type}','${id}','budget')">💰 ${fmtR(info.dailyBudget / 100)}</button>`;
+  return html || '<span style="font-size:10px;color:var(--txt-muted);">—</span>';
+}
+
+async function metaOptimize(type, id, op) {
+  if (META_STATE.optimizing) return;
+  const info = metaObjInfo(type, id);
+  if (!info) { showToast('Não foi possível identificar o objeto na Meta. Atualize os dados.', 'error'); return; }
+  const tipoLabel = { campaign: 'a campanha', adset: 'o conjunto', ad: 'o anúncio' }[type];
+  const cliente = CURRENT_CLIENT?.nome || 'cliente';
+  let payload;
+
+  if (op === 'pause' || op === 'activate') {
+    const status = op === 'pause' ? 'PAUSED' : 'ACTIVE';
+    const verbo = op === 'pause' ? 'PAUSAR' : 'ATIVAR';
+    if (!window.confirm(`${verbo} ${tipoLabel} "${info.name}" de ${cliente}?\n\nIsso altera a conta REAL do Meta Ads agora.`)) return;
+    payload = { action: 'set_status', object_type: type, object_id: id, status };
+  } else {
+    const atual = info.dailyBudget / 100;
+    const entrada = window.prompt(`Novo orçamento DIÁRIO (R$) para ${tipoLabel} "${info.name}".\nAtual: ${fmtR(atual)}. Aumento máximo por vez: 2x.`, String(atual.toFixed(2)).replace('.', ','));
+    if (entrada === null) return;
+    const novo = parseFloat(String(entrada).replace(/\./g, '').replace(',', '.'));
+    if (!isFinite(novo) || novo < 1) { showToast('Valor inválido (mínimo R$ 1,00).', 'error'); return; }
+    const cents = Math.round(novo * 100);
+    if (cents === info.dailyBudget) { showToast('O orçamento já é esse valor.', 'error'); return; }
+    if (!window.confirm(`Alterar orçamento diário de "${info.name}" (${cliente}):\n${fmtR(atual)} → ${fmtR(cents / 100)}\n\nIsso altera a conta REAL do Meta Ads agora.`)) return;
+    payload = { action: 'set_budget', object_type: type, object_id: id, daily_budget_cents: cents };
+  }
+
+  META_STATE.optimizing = true;
+  try {
+    const { action, ...rest } = payload;
+    const res = await metaLiveCall(action, { ...rest, confirm: true });
+    showToast(action === 'set_status'
+      ? `✅ ${info.name}: agora ${res.after.status === 'ACTIVE' ? 'ATIVO' : 'PAUSADO'} (confirmado pela Meta)`
+      : `✅ ${info.name}: orçamento diário ${fmtR(res.after.daily_budget_cents / 100)} (confirmado pela Meta)`, 'success');
+  } catch(e) {
+    showToast('Não foi possível otimizar: ' + e.message, 'error');
+  } finally {
+    META_STATE.optimizing = false;
+  }
+  if (CURRENT_CLIENT?.id) loadMetaDashboard(CURRENT_CLIENT.id, { silent: true });
 }
 
 function switchMetaAccount(idx) {
@@ -5180,6 +5261,7 @@ function renderMetaCampanhas(data, client) {
       <td style="font-family:var(--mono);font-size:11px;">${c.connect_rate !== '—' ? c.connect_rate+'%' : '—'}</td>
       <td style="font-family:var(--mono);font-size:11px;font-weight:700;">${parseInt(c.conversoes||0) > 0 ? `${convLabel ? '<span style="font-size:9px;color:var(--txt-muted);">'+convLabel+'</span> ' : ''}${fmtN(c.conversoes)}` : '—'}</td>
       <td style="font-family:var(--mono);font-size:11px;font-weight:700;${cpaStyle}">${cpaNum > 0 ? fmtR(cpaNum) : '—'}</td>
+      <td style="white-space:nowrap;">${metaActionButtons('campaign', c.campaign_id)}</td>
     </tr>`;
   }).join('');
 
@@ -5268,8 +5350,9 @@ function renderMetaCampanhas(data, client) {
             <th>CONNECT%</th>
             ${sh('conv','CONV.')}
             ${sh('cpa','CPA')}
+            <th>OTIMIZAR</th>
           </tr></thead>
-          <tbody>${rows || '<tr><td colspan="15" style="text-align:center;padding:30px;color:var(--txt-muted);">Nenhuma campanha encontrada com esses filtros</td></tr>'}</tbody>
+          <tbody>${rows || '<tr><td colspan="16" style="text-align:center;padding:30px;color:var(--txt-muted);">Nenhuma campanha encontrada com esses filtros</td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
@@ -5345,6 +5428,7 @@ function renderMetaConjuntos(data, client) {
       <td style="font-family:var(--mono);font-size:11px;${freqWarn?'color:var(--red)':''}">${as.freq}x${freqWarn?' ⚠':''}</td>
       <td style="font-family:var(--mono);font-size:11px;font-weight:700;">${parseInt(as.conv||0) > 0 ? fmtN(as.conv) : '—'}</td>
       <td style="font-family:var(--mono);font-size:11px;font-weight:700;${cpaStyle}">${cpaNum > 0 ? fmtR(cpaNum) : '—'}</td>
+      <td style="white-space:nowrap;">${metaActionButtons('adset', as.id)}</td>
     </tr>`;
   }).join('');
 
@@ -5435,8 +5519,9 @@ function renderMetaConjuntos(data, client) {
             ${sh('freq','FREQ.')}
             ${sh('conv','CONV.')}
             ${sh('cpa','CPA')}
+            <th>OTIMIZAR</th>
           </tr></thead>
-          <tbody>${rows || '<tr><td colspan="14" style="text-align:center;padding:30px;color:var(--txt-muted);">Nenhum conjunto encontrado com esses filtros</td></tr>'}</tbody>
+          <tbody>${rows || '<tr><td colspan="15" style="text-align:center;padding:30px;color:var(--txt-muted);">Nenhum conjunto encontrado com esses filtros</td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
@@ -5527,6 +5612,7 @@ function renderMetaCriativos(data, client) {
       <td style="font-family:var(--mono);font-size:11px;${freqWarn?'color:var(--red)':''}">${ad.freq}x</td>
       <td style="font-family:var(--mono);font-size:11px;font-weight:700;">${parseInt(ad.conv||0) > 0 ? fmtN(ad.conv) : '—'}</td>
       <td style="font-family:var(--mono);font-size:11px;font-weight:700;${cpaStyle}">${cpaNum > 0 ? fmtR(cpaNum) : '—'}</td>
+      <td style="white-space:nowrap;">${metaActionButtons('ad', ad.id)}</td>
     </tr>`;
   }).join('');
 
@@ -5643,8 +5729,9 @@ function renderMetaCriativos(data, client) {
             ${sortHeader('freq','FREQ.')}
             ${sortHeader('conv','CONV.')}
             ${sortHeader('cpa','CPA')}
+            <th>OTIMIZAR</th>
           </tr></thead>
-          <tbody>${rows || '<tr><td colspan="11" style="text-align:center;padding:30px;color:var(--txt-muted);">Nenhum criativo encontrado com esses filtros</td></tr>'}</tbody>
+          <tbody>${rows || '<tr><td colspan="12" style="text-align:center;padding:30px;color:var(--txt-muted);">Nenhum criativo encontrado com esses filtros</td></tr>'}</tbody>
         </table>
       </div>
     </div>
@@ -10899,7 +10986,7 @@ const META_GUIDE_STEPS = [
       </div>
       <div style="display:flex;gap:12px;align-items:flex-start;">
         <div style="background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;margin-top:1px;">3</div>
-        <div>Após salvar os segredos, acesse <a href="https://supabase.com/dashboard/project/qrguvaajioqndrruxkpi/functions" target="_blank" style="color:var(--accent);">Edge Functions</a> e <strong>faça redeploy</strong> das funções <code>meta-proxy</code> e <code>send-report</code> para que elas leiam os novos segredos.</div>
+        <div>Após salvar os segredos, acesse <a href="https://supabase.com/dashboard/project/qrguvaajioqndrruxkpi/functions" target="_blank" style="color:var(--accent);">Edge Functions</a> e <strong>faça redeploy</strong> das funções <code>meta-live</code> e <code>send-report</code> para que elas leiam os novos segredos.</div>
       </div>
     `
   },
