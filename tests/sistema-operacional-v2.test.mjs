@@ -103,3 +103,11 @@ test('Migração de auditoria Meta protege o log de ações', () => {
   assert.match(audit, /grant select on public\.meta_action_log to authenticated/);
   assert.doesNotMatch(audit, /grant (insert|update|delete)/i);
 });
+
+test('Aviso de descartar fica dentro do dialog e há tela de criar senha', () => {
+  assert.match(html, /_idxDialog && _idxDialog\.open \? _idxDialog : document\.body/);
+  assert.match(html, /if \(document\.getElementById\('idx-unsaved-confirm'\)\) return;/);
+  assert.match(html, /id="password-screen"/);
+  assert.match(html, /SB\.auth\.updateUser\(\{ password: pw \}\)/);
+  assert.match(html, /SB\.auth\.resetPasswordForEmail/);
+});

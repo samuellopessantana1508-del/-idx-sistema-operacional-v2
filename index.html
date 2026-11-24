@@ -1970,6 +1970,31 @@ textarea:focus-visible {
         <input type="password" id="login-password" placeholder="••••••••">
       </div>
       <button class="btn-login" onclick="doLogin()">Entrar</button>
+      <button type="button" class="btn-small" style="margin-top:12px;width:100%;" onclick="sendPasswordLink()">Primeiro acesso / esqueci minha senha</button>
+      <div style="font-size:11px;color:var(--txt-muted);margin-top:8px;line-height:1.4;">Digite seu e-mail acima e clique para receber o link de criação de senha.</div>
+    </div>
+  </div>
+</div>
+
+<!-- TELA DE CRIAR / ALTERAR SENHA -->
+<div id="password-screen" style="display:none;position:fixed;inset:0;z-index:2000;align-items:center;justify-content:center;background:var(--bg-primary);">
+  <div class="login-card">
+    <div class="login-header">
+      <h1>IDX</h1>
+      <p id="pw-title">Criar senha</p>
+    </div>
+    <div class="login-form">
+      <div id="pw-user" style="font-size:12px;color:var(--txt-muted);margin-bottom:12px;"></div>
+      <div class="form-group">
+        <label>Nova senha (mínimo 8 caracteres)</label>
+        <input type="password" id="pw-new" autocomplete="new-password" placeholder="••••••••">
+      </div>
+      <div class="form-group">
+        <label>Confirmar nova senha</label>
+        <input type="password" id="pw-confirm" autocomplete="new-password" placeholder="••••••••">
+      </div>
+      <button class="btn-login" id="pw-save" onclick="savePassword()">Salvar senha</button>
+      <button type="button" class="btn-small" id="pw-cancel" style="margin-top:12px;width:100%;display:none;" onclick="closePasswordScreen()">Cancelar</button>
     </div>
   </div>
 </div>
@@ -1989,6 +2014,7 @@ textarea:focus-visible {
       <div class="avatar" id="avatar">U</div>
     </div>
     <div class="header-right">
+      <button class="btn-small" onclick="openPasswordScreen('change')">Senha</button>
       <button class="btn-small" onclick="doLogout()">Sair</button>
     </div>
   </div>
@@ -2717,14 +2743,28 @@ async function initApp() {
   }
   showLoader(true);
   try {
+    // Link de convite / recuperação do Supabase: abre direto a tela de criar senha.
+    const linkParams = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+    const linkType = linkParams.get('type');
+    const linkError = linkParams.get('error_description');
+    PW_FROM_LINK = (linkType === 'invite' || linkType === 'recovery' || linkType === 'signup' || linkType === 'magiclink') && !!linkParams.get('access_token');
     SB = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
     const { data, error } = await SB.auth.getSession();
+    if (linkError) {
+      history.replaceState(null, '', location.pathname);
+      showToast('Link inválido ou expirado. Use "Primeiro acesso / esqueci minha senha" para receber outro.', 'error');
+    }
     if (error || !data.session) {
       showLogin();
       showLoader(false);
       return;
     }
     SESSION = data.session;
+    if (PW_FROM_LINK) {
+      showLoader(false);
+      openPasswordScreen('set');
+      return;
+    }
     await loadUserRole();
     setupApp();
   } catch(e) {
@@ -2808,6 +2848,67 @@ async function doLogin() {
   } catch(e) {
     showToast('Erro ao fazer login: ' + e.message, 'error');
     showLoader(false);
+  }
+}
+
+let PW_FROM_LINK = false;
+
+async function sendPasswordLink() {
+  const email = document.getElementById('login-email').value.trim();
+  if (!email) { showToast('Digite seu e-mail no campo acima primeiro', 'error'); return; }
+  showLoader(true);
+  try {
+    const { error } = await SB.auth.resetPasswordForEmail(email, { redirectTo: location.origin + '/' });
+    if (error) throw error;
+    showToast('Se o e-mail estiver autorizado, você receberá o link para criar a senha.', 'success');
+  } catch(e) {
+    showToast('Não foi possível enviar o link: ' + e.message, 'error');
+  } finally {
+    showLoader(false);
+  }
+}
+
+function openPasswordScreen(mode) {
+  const el = document.getElementById('password-screen');
+  document.getElementById('pw-title').textContent = mode === 'set' ? 'Criar senha' : 'Alterar senha';
+  document.getElementById('pw-user').textContent = SESSION?.user?.email || '';
+  document.getElementById('pw-new').value = '';
+  document.getElementById('pw-confirm').value = '';
+  document.getElementById('pw-cancel').style.display = mode === 'change' ? 'block' : 'none';
+  el.dataset.mode = mode;
+  el.style.display = 'flex';
+  setTimeout(() => document.getElementById('pw-new').focus(), 50);
+}
+
+function closePasswordScreen() {
+  document.getElementById('password-screen').style.display = 'none';
+}
+
+async function savePassword() {
+  const el = document.getElementById('password-screen');
+  const pw = document.getElementById('pw-new').value;
+  const pw2 = document.getElementById('pw-confirm').value;
+  if (pw.length < 8) { showToast('A senha precisa ter pelo menos 8 caracteres', 'error'); return; }
+  if (pw !== pw2) { showToast('As senhas não conferem', 'error'); return; }
+  const btn = document.getElementById('pw-save');
+  btn.disabled = true;
+  try {
+    const { error } = await SB.auth.updateUser({ password: pw });
+    if (error) throw error;
+    showToast('Senha salva com sucesso', 'success');
+    const wasLink = el.dataset.mode === 'set';
+    closePasswordScreen();
+    if (wasLink) {
+      history.replaceState(null, '', location.pathname);
+      PW_FROM_LINK = false;
+      showLoader(true);
+      await loadUserRole();
+      setupApp();
+    }
+  } catch(e) {
+    showToast('Erro ao salvar a senha: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -10332,6 +10433,8 @@ function _safeCloseModal() {
 }
 
 function _showUnsavedConfirm() {
+  // O <dialog> usa a "top layer": o aviso precisa ficar DENTRO dele, senão aparece por trás (tela preta, sem como sair).
+  if (document.getElementById('idx-unsaved-confirm')) return;
   const overlay = document.createElement('div');
   overlay.id = 'idx-unsaved-confirm';
   overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5);backdrop-filter:blur(2px);';
@@ -10344,7 +10447,7 @@ function _showUnsavedConfirm() {
         <button onclick="document.getElementById('idx-unsaved-confirm').remove();closeModal(_activeModalId,true);" style="padding:8px 20px;border-radius:var(--radius);border:none;background:var(--red);color:white;cursor:pointer;font-size:13px;font-weight:600;">Descartar</button>
       </div>
     </div>`;
-  document.body.appendChild(overlay);
+  (_idxDialog && _idxDialog.open ? _idxDialog : document.body).appendChild(overlay);
 }
 
 function openModal(id) {
